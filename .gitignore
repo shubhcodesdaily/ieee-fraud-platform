@@ -1,0 +1,16 @@
+# Git-ignore raw massive data files
+data/
+*.csv
+*.zip
+
+# Python environment artifacts
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# IDE / OS specific files
+.vscode/
+.DS_Store
+Thumbs.db
