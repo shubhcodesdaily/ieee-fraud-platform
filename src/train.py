@@ -93,3 +93,53 @@ def run_training():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     run_training()
+
+
+def explain_one_prediction(model, test_df, row_index=0):
+    import shap
+
+    X_test = test_df[FEATURE_COLUMNS]
+    one_row = X_test.iloc[[row_index]]
+
+    predicted_probability = model.predict_proba(one_row)[:, 1][0]
+    actual_label = test_df[TARGET_COLUMN].iloc[row_index]
+
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(one_row)
+
+    logger.info("Transaction (row %s): predicted fraud probability = %.4f (actual label: %s)", row_index, predicted_probability, actual_label)
+    logger.info("Feature contributions (positive = pushed toward fraud):")
+
+    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+
+    for feature_name, contribution in contributions:
+        feature_value = one_row[feature_name].iloc[0]
+        logger.info("  %s = %s  ->  contribution: %+.4f", feature_name, feature_value, contribution)
+
+    return contributions
+
+
+def explain_one_prediction(model, test_df, row_index=0):
+    import shap
+
+    X_test = test_df[FEATURE_COLUMNS]
+    one_row = X_test.iloc[[row_index]]
+
+    predicted_probability = model.predict_proba(one_row)[:, 1][0]
+    actual_label = test_df[TARGET_COLUMN].iloc[row_index]
+
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(one_row)
+
+    logger.info("Transaction (row %s): predicted fraud probability = %.4f (actual label: %s)", row_index, predicted_probability, actual_label)
+    logger.info("Feature contributions (positive = pushed toward fraud):")
+
+    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+
+    for feature_name, contribution in contributions:
+        feature_value = one_row[feature_name].iloc[0]
+        logger.info("  %s = %s  ->  contribution: %+.4f", feature_name, feature_value, contribution)
+
+    return contributions
