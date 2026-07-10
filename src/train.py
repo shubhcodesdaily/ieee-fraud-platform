@@ -81,65 +81,40 @@ def find_best_threshold(model, test_df, false_alarm_cost=10):
     return best_threshold, best_total_cost
 
 
+def explain_one_prediction(model, test_df, row_index=0):
+    import shap
+    X_test = test_df[FEATURE_COLUMNS]
+    one_row = X_test.iloc[[row_index]]
+    predicted_probability = model.predict_proba(one_row)[:, 1][0]
+    actual_label = test_df[TARGET_COLUMN].iloc[row_index]
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(one_row)
+    logger.info("Transaction (row %s): predicted fraud probability = %.4f (actual label: %s)", row_index, predicted_probability, actual_label)
+    logger.info("Feature contributions (positive = pushed toward fraud):")
+    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+    for feature_name, contribution in contributions:
+        feature_value = one_row[feature_name].iloc[0]
+        logger.info("  %s = %s  ->  contribution: %+.4f", feature_name, feature_value, contribution)
+    return contributions
+
+
+def save_model(model, path="model.joblib"):
+    import joblib
+    joblib.dump(model, path)
+    logger.info("Model saved to %s", path)
+
+
 def run_training():
     df = build_features()
     train_df, test_df = split_by_time(df)
     model = train_model(train_df)
     roc_auc, pr_auc = evaluate_model(model, test_df)
     best_threshold, best_cost = find_best_threshold(model, test_df)
+    save_model(model)
     return model, roc_auc, pr_auc, best_threshold, best_cost
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     run_training()
-
-
-def explain_one_prediction(model, test_df, row_index=0):
-    import shap
-
-    X_test = test_df[FEATURE_COLUMNS]
-    one_row = X_test.iloc[[row_index]]
-
-    predicted_probability = model.predict_proba(one_row)[:, 1][0]
-    actual_label = test_df[TARGET_COLUMN].iloc[row_index]
-
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(one_row)
-
-    logger.info("Transaction (row %s): predicted fraud probability = %.4f (actual label: %s)", row_index, predicted_probability, actual_label)
-    logger.info("Feature contributions (positive = pushed toward fraud):")
-
-    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
-    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
-
-    for feature_name, contribution in contributions:
-        feature_value = one_row[feature_name].iloc[0]
-        logger.info("  %s = %s  ->  contribution: %+.4f", feature_name, feature_value, contribution)
-
-    return contributions
-
-
-def explain_one_prediction(model, test_df, row_index=0):
-    import shap
-
-    X_test = test_df[FEATURE_COLUMNS]
-    one_row = X_test.iloc[[row_index]]
-
-    predicted_probability = model.predict_proba(one_row)[:, 1][0]
-    actual_label = test_df[TARGET_COLUMN].iloc[row_index]
-
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(one_row)
-
-    logger.info("Transaction (row %s): predicted fraud probability = %.4f (actual label: %s)", row_index, predicted_probability, actual_label)
-    logger.info("Feature contributions (positive = pushed toward fraud):")
-
-    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
-    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
-
-    for feature_name, contribution in contributions:
-        feature_value = one_row[feature_name].iloc[0]
-        logger.info("  %s = %s  ->  contribution: %+.4f", feature_name, feature_value, contribution)
-
-    return contributions
