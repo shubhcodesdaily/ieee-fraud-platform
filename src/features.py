@@ -23,38 +23,62 @@ def get_connection():
 
 
 FEATURE_QUERY = """
+WITH combined AS (
+    SELECT
+        t.transactionid,
+        t.card1,
+        t.addr1,
+        t.transactiondt,
+        t.transactionamt,
+        t.isfraud,
+        t.p_emaildomain,
+        -- A more precise identity than card1 alone: combine card + billing
+        -- address. The same card1 can be reissued to different people over
+        -- time, so this approximates "the same real customer" better.
+        CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA')) AS uid,
+        i.devicetype,
+        -- Flag: does this transaction have any identity record at all?
+        -- Missing identity is itself a signal, not just an absence of data.
+        CASE WHEN i.transactionid IS NOT NULL THEN 1 ELSE 0 END AS has_identity
+    FROM transactions t
+    LEFT JOIN identities i ON t.transactionid = i.transactionid
+)
 SELECT
     transactionid,
     card1,
+    uid,
     transactiondt,
     transactionamt,
     isfraud,
+    devicetype,
+    has_identity,
+    p_emaildomain,
 
-    -- Feature 1: average amount this card spent, using only transactions
-    -- strictly before this one (never includes the current row).
+    -- Same three behavioral features as before, but now partitioned by the
+    -- more precise uid instead of card1 alone.
     AVG(transactionamt) OVER (
-        PARTITION BY card1
-        ORDER BY transactiondt
+        PARTITION BY uid ORDER BY transactiondt
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-    ) AS card_avg_amt_before_this,
+    ) AS uid_avg_amt_before_this,
 
-    -- Feature 2: how many transactions this card has made before this one.
-    -- A sudden spike in this number signals unusual velocity.
     COUNT(*) OVER (
-        PARTITION BY card1
-        ORDER BY transactiondt
+        PARTITION BY uid ORDER BY transactiondt
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-    ) AS card_txn_count_before_this,
+    ) AS uid_txn_count_before_this,
 
-    -- Feature 3: seconds since this card's previous transaction.
-    -- Fraud often comes in rapid bursts, so a very small gap is a signal.
     transactiondt - LAG(transactiondt) OVER (
-        PARTITION BY card1
-        ORDER BY transactiondt
-    ) AS seconds_since_last_txn
+        PARTITION BY uid ORDER BY transactiondt
+    ) AS seconds_since_last_txn,
 
-FROM transactions
-ORDER BY card1, transactiondt;
+    -- New: how many prior transactions has this email domain been involved
+    -- in? Unusual or rare domains are a classic fraud signal.
+    COUNT(*) OVER (
+        PARTITION BY p_emaildomain ORDER BY transactiondt
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ) AS email_txn_count_before_this
+
+FROM combined
+ORDER BY uid, transactiondt;
 """
 
 

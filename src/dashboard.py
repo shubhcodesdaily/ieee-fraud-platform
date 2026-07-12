@@ -1,5 +1,4 @@
 import logging
-
 import joblib
 import pandas as pd
 import psycopg2
@@ -22,12 +21,18 @@ def load_model():
     return model, explainer
 
 
+def get_recent_activity(limit=15):
+    conn = get_connection()
+    df = pd.read_sql(
+        f"SELECT transactionid, transactionamt, fraud_probability, was_flagged, processed_at "
+        f"FROM activity_log ORDER BY processed_at DESC LIMIT {limit};",
+        conn,
+    )
+    conn.close()
+    return df
+
+
 def get_queue():
-    """
-    Pull every undecided flagged case with a richer set of transaction and
-    identity details - the context a real analyst needs to judge a case,
-    not just the bare minimum.
-    """
     conn = get_connection()
     query = """
         SELECT
@@ -61,12 +66,6 @@ def get_queue():
 
 
 def get_case_features(transaction_id):
-    """
-    Recompute the exact engineered feature values used at scoring time for
-    one transaction, so we can show both the SHAP contribution AND the
-    real underlying number (e.g. "this customer normally spends 45,
-    this transaction is 850").
-    """
     conn = get_connection()
     query = f"""
         SELECT card1, transactionamt, has_identity,
@@ -102,6 +101,16 @@ def get_case_features(transaction_id):
     """
     df = pd.read_sql(query, conn)
     conn.close()
+
+    numeric_columns = [
+        "uid_avg_amt_before_this",
+        "uid_txn_count_before_this",
+        "seconds_since_last_txn",
+        "email_txn_count_before_this",
+    ]
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return df[FEATURE_COLUMNS]
 
 
@@ -117,7 +126,6 @@ def save_decision(transaction_id, analyst_name, decision):
 
 
 def format_value(value):
-    """Show 'N/A' for missing data instead of a bare blank or 'None'."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "N/A"
     return value
@@ -132,18 +140,38 @@ queue = get_queue()
 
 st.write(f"**{len(queue)} cases** awaiting review, sorted by risk.")
 
-analyst_name = st.text_input("Analyst name", value="Shubh Keshri")
+total_value_at_risk = queue["transactionamt"].sum()
+avg_risk = queue["fraud_probability"].mean() if len(queue) > 0 else 0
+
+kpi1, kpi2, kpi3 = st.columns(3)
+kpi1.metric("Cases in queue", f"{len(queue):,}")
+kpi2.metric("Value at risk", f"GBP {total_value_at_risk:,.2f}")
+kpi3.metric("Average risk score", f"{avg_risk:.1%}")
+
+min_risk = st.slider("Minimum risk to display", 0.0, 1.0, 0.0, 0.01)
+queue = queue[queue["fraud_probability"] >= min_risk]
+
+with st.sidebar:
+    st.subheader("Live Activity Feed")
+    if st.button("Refresh feed"):
+        st.rerun()
+    activity = get_recent_activity()
+    for _, row in activity.iterrows():
+        tag = "[FLAGGED]" if row["was_flagged"] else "[ok]"
+        st.write(f"{tag} Txn {row['transactionid']} - GBP {row['transactionamt']:.2f} - {row['fraud_probability']:.1%}")
+
+analyst_name = st.text_input("Analyst name", value="Shubh")
 
 for _, case in queue.iterrows():
-    approval_tag = " 🔴 SECOND APPROVAL REQUIRED" if case["requires_second_approval"] else ""
-    header = f"Txn {case['transactionid']} — {case['fraud_probability']:.1%} risk — £{case['transactionamt']:.2f}{approval_tag}"
+    approval_tag = " [SECOND APPROVAL REQUIRED]" if case["requires_second_approval"] else ""
+    header = f"Txn {case['transactionid']} - {case['fraud_probability']:.1%} risk - GBP {case['transactionamt']:.2f}{approval_tag}"
 
     with st.expander(header):
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.markdown("**Transaction**")
-            st.write(f"Amount: £{case['transactionamt']:.2f}")
+            st.write(f"Amount: GBP {case['transactionamt']:.2f}")
             st.write(f"Product category: {format_value(case['productcd'])}")
             st.write(f"Time offset: {case['transactiondt']}")
 
@@ -162,7 +190,7 @@ for _, case in queue.iterrows():
             st.write(f"Receiver email: {format_value(case['r_emaildomain'])}")
 
         st.markdown("---")
-        st.markdown("**Why this was flagged — behavioral signals:**")
+        st.markdown("**Why this was flagged - behavioral signals:**")
 
         feature_row = get_case_features(case["transactionid"])
         shap_values = explainer.shap_values(feature_row)
@@ -171,8 +199,8 @@ for _, case in queue.iterrows():
 
         for feature_name, contribution in contributions:
             actual_value = feature_row[feature_name].iloc[0]
-            direction = "🔺 toward fraud" if contribution > 0 else "🔻 toward normal"
-            st.write(f"- **{feature_name}** = {format_value(actual_value)} → {direction} ({contribution:+.3f})")
+            direction = "[UP] toward fraud" if contribution > 0 else "[DOWN] toward normal"
+            st.write(f"- **{feature_name}** = {format_value(actual_value)} -> {direction} ({contribution:+.3f})")
 
         st.markdown("---")
         btn_col1, btn_col2, btn_col3 = st.columns(3)
