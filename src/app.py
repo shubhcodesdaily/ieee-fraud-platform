@@ -29,21 +29,14 @@ FEATURE_COLUMNS = [
 
 app = FastAPI(title="Fraud Detection API")
 
-
 class Transaction(BaseModel):
-    """
-    The shape of a transaction the API expects to receive.
-    Pydantic automatically validates types and rejects bad requests -
-    e.g. if card1 is sent as text instead of a number, this catches it
-    before our code ever runs.
-    """
+    """Only the raw facts a caller would actually know about a new transaction."""
+    transactionid: int
     card1: int
+    addr1: int | None = None
     transactionamt: float
-    has_identity: int
-    uid_avg_amt_before_this: float | None = None
-    uid_txn_count_before_this: int = 0
-    seconds_since_last_txn: float | None = None
-    email_txn_count_before_this: int = 0
+    transactiondt: int
+    p_emaildomain: str | None = None
 
 
 @app.get("/")
@@ -51,24 +44,72 @@ def health_check():
     """Simple endpoint to confirm the API is alive."""
     return {"status": "ok", "message": "Fraud detection API is running"}
 
+def compute_features_from_db(txn: Transaction):
+    """Insert the transaction, then compute its features from real history in Postgres."""
+    import psycopg2
+    import pandas as pd
+
+    conn = psycopg2.connect(
+        host="localhost", port="5433", dbname="fraud_detection",
+        user="postgres", password="Atomic123",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO transactions (transactionid, isfraud, transactiondt, transactionamt,
+                                       productcd, card1, addr1, p_emaildomain)
+            VALUES (%s, 0, %s, %s, 'W', %s, %s, %s)
+            ON CONFLICT (transactionid) DO NOTHING
+            """,
+            (txn.transactionid, txn.transactiondt, txn.transactionamt,
+             txn.card1, txn.addr1, txn.p_emaildomain),
+        )
+    conn.commit()
+
+    query = f"""
+        SELECT card1, transactionamt, has_identity,
+               uid_avg_amt_before_this, uid_txn_count_before_this,
+               seconds_since_last_txn, email_txn_count_before_this
+        FROM (
+            SELECT
+                t.transactionid, t.card1, t.transactionamt,
+                CASE WHEN i.transactionid IS NOT NULL THEN 1 ELSE 0 END AS has_identity,
+                CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA')) AS uid,
+                AVG(t.transactionamt) OVER (
+                    PARTITION BY CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA'))
+                    ORDER BY t.transactiondt
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) AS uid_avg_amt_before_this,
+                COUNT(*) OVER (
+                    PARTITION BY CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA'))
+                    ORDER BY t.transactiondt
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) AS uid_txn_count_before_this,
+                t.transactiondt - LAG(t.transactiondt) OVER (
+                    PARTITION BY CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA'))
+                    ORDER BY t.transactiondt
+                ) AS seconds_since_last_txn,
+                COUNT(*) OVER (
+                    PARTITION BY t.p_emaildomain ORDER BY t.transactiondt
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) AS email_txn_count_before_this
+            FROM transactions t
+            LEFT JOIN identities i ON t.transactionid = i.transactionid
+        ) sub
+        WHERE transactionid = {txn.transactionid};
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+
+    for col in ["uid_avg_amt_before_this", "uid_txn_count_before_this",
+                "seconds_since_last_txn", "email_txn_count_before_this"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df[FEATURE_COLUMNS]
 
 @app.post("/score")
 def score_transaction(transaction: Transaction):
-    """
-    Score one transaction and return a decision plus the reasons why.
-    """
-    # Convert the incoming transaction into the same column order the
-    # model was trained on - this consistency is what prevents
-    # "training/serving skew".
-    row = pd.DataFrame([{
-        "card1": transaction.card1,
-        "transactionamt": transaction.transactionamt,
-        "has_identity": transaction.has_identity,
-        "uid_avg_amt_before_this": transaction.uid_avg_amt_before_this,
-        "uid_txn_count_before_this": transaction.uid_txn_count_before_this,
-        "seconds_since_last_txn": transaction.seconds_since_last_txn,
-        "email_txn_count_before_this": transaction.email_txn_count_before_this,
-    }])
+    row = compute_features_from_db(transaction)
 
     probability = model.predict_proba(row)[:, 1][0]
     is_flagged = bool(probability >= DECISION_THRESHOLD)
