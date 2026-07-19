@@ -1,17 +1,126 @@
 import logging
+import os
+
 import joblib
 import pandas as pd
 import psycopg2
 import psycopg2.extras
 import shap
 import streamlit as st
+from dotenv import load_dotenv
 
 from src.features import get_connection
 from src.train import FEATURE_COLUMNS
 
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-st.set_page_config(page_title="Fraud Analyst Dashboard", layout="wide")
+st.set_page_config(page_title="Fraud Decision Dashboard", layout="wide")
+
+
+def check_password():
+    def password_entered():
+        if st.session_state["password_input"] == os.getenv("DASHBOARD_PASSWORD"):
+            st.session_state["password_correct"] = True
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state or not st.session_state["password_correct"]:
+        st.markdown(
+            """
+            <style>
+            [data-testid="stAppViewContainer"] {
+                background: linear-gradient(135deg, #f4f6f9 0%, #e9edf2 100%);
+            }
+            .brand-banner {
+                background: linear-gradient(135deg, #001f3f 0%, #003366 100%);
+                padding: 28px 20px;
+                border-radius: 12px 12px 0 0;
+                text-align: center;
+            }
+            .brand-mark {
+                display: inline-block;
+                width: 44px;
+                height: 44px;
+                border: 3px solid white;
+                border-radius: 10px;
+                color: white;
+                font-size: 18px;
+                font-weight: 800;
+                line-height: 38px;
+                margin-bottom: 10px;
+            }
+            .brand-name {
+                color: white;
+                font-size: 22px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            .brand-tagline {
+                color: #a9c1dd;
+                font-size: 12px;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                margin-top: 2px;
+            }
+            .login-card {
+                background: white;
+                padding: 32px 40px 32px 40px;
+                border-radius: 0 0 12px 12px;
+                box-shadow: 0 4px 24px rgba(0, 31, 63, 0.12);
+                text-align: center;
+            }
+            .stButton button {
+                background-color: #001f3f;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 0;
+                width: 100%;
+                font-weight: 600;
+            }
+            .stButton button:hover {
+                background-color: #003366;
+                color: white;
+                border: none;
+            }
+            div[data-testid="stTextInput"] input {
+                border-radius: 6px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        col1, col2, col3 = st.columns([1, 1.5, 1])
+        with col2:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.markdown(
+                """
+                <div class="brand-banner">
+                    <div class="brand-mark">SFI</div>
+                    <div class="brand-name">SENTINEL FRAUD INTELLIGENCE</div>
+                    <div class="brand-tagline">Real-Time Risk & Case Management</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown('<div class="login-card">', unsafe_allow_html=True)
+            st.markdown("**Analyst Access Portal**")
+            st.text_input("Password", type="password", key="password_input", label_visibility="collapsed", placeholder="Enter your password")
+            st.button("Sign In", on_click=password_entered)
+            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+                st.error("Incorrect password. Please try again.")
+            st.markdown('<div style="font-size:12px;color:#9ca3af;margin-top:20px;">Authorized personnel only</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+        return False
+    else:
+        return True
+
+
+if not check_password():
+    st.stop()
 
 
 @st.cache_resource
@@ -30,6 +139,37 @@ def get_recent_activity(limit=15):
     )
     conn.close()
     return df
+
+
+def get_pending_count():
+    conn = get_connection()
+    result = pd.read_sql(
+        """
+        SELECT COUNT(*) AS pending_count
+        FROM flagged_cases f
+        LEFT JOIN analyst_decisions d ON f.transactionid = d.transactionid
+        WHERE d.id IS NULL;
+        """,
+        conn,
+    )
+    conn.close()
+    return int(result["pending_count"].iloc[0])
+
+
+def get_pending_value():
+    conn = get_connection()
+    result = pd.read_sql(
+        """
+        SELECT COALESCE(SUM(t.transactionamt), 0) AS total_pending_value
+        FROM flagged_cases f
+        JOIN transactions t ON f.transactionid = t.transactionid
+        LEFT JOIN analyst_decisions d ON f.transactionid = d.transactionid
+        WHERE d.id IS NULL;
+        """,
+        conn,
+    )
+    conn.close()
+    return result["total_pending_value"].iloc[0]
 
 
 def get_queue():
@@ -131,90 +271,158 @@ def format_value(value):
     return value
 
 
-# --- UI starts here ---------------------------------------------------
+def kpi_card(label, value, alert=False):
+    css_class = "kpi-card alert" if alert else "kpi-card"
+    st.markdown(
+        f'<div class="{css_class}"><div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div></div>',
+        unsafe_allow_html=True,
+    )
 
-st.title("Fraud Analyst Dashboard")
 
-model, explainer = load_model()
-queue = get_queue()
+st.markdown(
+    """
+    <style>
+    .kpi-card {
+        background: white;
+        border-radius: 10px;
+        padding: 18px 16px;
+        box-shadow: 0 2px 10px rgba(0,31,63,0.08);
+        border-left: 4px solid #001f3f;
+        margin-bottom: 8px;
+        min-height: 90px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    .kpi-label {
+        color: #6b7280;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 4px;
+    }
+    .kpi-value {
+        color: #001f3f;
+        font-size: 22px;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .kpi-card.alert { border-left-color: #b91c1c; }
+    .kpi-card.alert .kpi-value { color: #b91c1c; }
+    .sidebar-header {
+        color: #001f3f;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.write(f"**{len(queue)} cases** awaiting review, sorted by risk.")
-
-total_value_at_risk = queue["transactionamt"].sum()
-avg_risk = queue["fraud_probability"].mean() if len(queue) > 0 else 0
-
-kpi1, kpi2, kpi3 = st.columns(3)
-kpi1.metric("Cases in queue", f"{len(queue):,}")
-kpi2.metric("Value at risk", f"GBP {total_value_at_risk:,.2f}")
-kpi3.metric("Average risk score", f"{avg_risk:.1%}")
-
-min_risk = st.slider("Minimum risk to display", 0.0, 1.0, 0.0, 0.01)
-queue = queue[queue["fraud_probability"] >= min_risk]
 
 with st.sidebar:
-    st.subheader("Live Activity Feed")
-    if st.button("Refresh feed"):
+    with st.container(border=True):
+        st.markdown('<div class="sidebar-header">Analyst</div>', unsafe_allow_html=True)
+        analyst_name = st.text_input("Analyst name", value="Shubh Keshri", label_visibility="collapsed")
+
+    if st.button("Logout"):
+        st.session_state["password_correct"] = False
         st.rerun()
-    activity = get_recent_activity()
-    for _, row in activity.iterrows():
-        tag = "[FLAGGED]" if row["was_flagged"] else "[ok]"
-        st.write(f"{tag} Txn {row['transactionid']} - GBP {row['transactionamt']:.2f} - {row['fraud_probability']:.1%}")
 
-analyst_name = st.text_input("Analyst name", value="Shubh")
 
-for _, case in queue.iterrows():
-    approval_tag = " [SECOND APPROVAL REQUIRED]" if case["requires_second_approval"] else ""
-    header = f"Txn {case['transactionid']} - {case['fraud_probability']:.1%} risk - GBP {case['transactionamt']:.2f}{approval_tag}"
+main_col, activity_col = st.columns([3, 1])
 
-    with st.expander(header):
-        col1, col2, col3 = st.columns(3)
+with main_col:
+    st.title("Fraud Analyst Dashboard")
 
-        with col1:
-            st.markdown("**Transaction**")
-            st.write(f"Amount: GBP {case['transactionamt']:.2f}")
-            st.write(f"Product category: {format_value(case['productcd'])}")
-            st.write(f"Time offset: {case['transactiondt']}")
+    model, explainer = load_model()
+    queue = get_queue()
 
-        with col2:
-            st.markdown("**Card & Address**")
-            st.write(f"Card number: {case['card1']}")
-            st.write(f"Card type: {format_value(case['card4'])} / {format_value(case['card6'])}")
-            st.write(f"Billing address code: {format_value(case['addr1'])} / {format_value(case['addr2'])}")
-            st.write(f"Distance signal: {format_value(case['dist1'])}")
+    with st.container(border=True):
+        st.markdown('<div class="sidebar-header">Case Lookup & Filters</div>', unsafe_allow_html=True)
+        search_col, risk_col, amount_col = st.columns(3)
+        with search_col:
+            search_id = st.text_input("Search by Transaction ID", placeholder="Enter transaction ID")
+        with risk_col:
+            min_risk = st.slider("Minimum risk score", 0.0, 1.0, 0.0, 0.01)
+        with amount_col:
+            min_amount = st.number_input("Minimum amount (GBP)", min_value=0.0, value=0.0, step=50.0)
 
-        with col3:
-            st.markdown("**Identity & Device**")
-            st.write(f"Device type: {format_value(case['devicetype'])}")
-            st.write(f"Device info: {format_value(case['deviceinfo'])}")
-            st.write(f"Payment email: {format_value(case['p_emaildomain'])}")
-            st.write(f"Receiver email: {format_value(case['r_emaildomain'])}")
+    if search_id:
+        try:
+            search_id_int = int(search_id)
+            queue = queue[queue["transactionid"] == search_id_int]
+            if len(queue) == 0:
+                st.warning("No matching case found in the current pending queue.")
+        except ValueError:
+            st.warning("Please enter a valid numeric Transaction ID.")
 
-        st.markdown("---")
-        st.markdown("**Why this was flagged - behavioral signals:**")
+    queue = queue[queue["fraud_probability"] >= min_risk]
+    queue = queue[queue["transactionamt"] >= min_amount]
 
-        feature_row = get_case_features(case["transactionid"])
-        shap_values = explainer.shap_values(feature_row)
-        contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
-        contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+    total_value_at_risk = queue["transactionamt"].sum()
+    avg_risk = queue["fraud_probability"].mean() if len(queue) > 0 else 0
+    pending_count = get_pending_count()
+    pending_value = get_pending_value()
 
-        for feature_name, contribution in contributions:
-            actual_value = feature_row[feature_name].iloc[0]
-            direction = "[UP] toward fraud" if contribution > 0 else "[DOWN] toward normal"
-            st.write(f"- **{feature_name}** = {format_value(actual_value)} -> {direction} ({contribution:+.3f})")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    with kpi1:
+        kpi_card("Cases in Queue", f"{len(queue):,}")
+    with kpi2:
+        kpi_card("Value at Risk", f"GBP {total_value_at_risk/1000:,.1f}K")
+    with kpi3:
+        kpi_card("Avg Risk Score", f"{avg_risk:.1%}", alert=(avg_risk > 0.5))
+    with kpi4:
+        kpi_card("Pending Review", f"{pending_count:,}", alert=(pending_count > 1000))
+    with kpi5:
+        kpi_card("Pending Value", f"GBP {pending_value/1000:,.1f}K")
 
-        st.markdown("---")
-        btn_col1, btn_col2, btn_col3 = st.columns(3)
-        if btn_col1.button("Confirm Fraud", key=f"confirm_{case['transactionid']}"):
-            save_decision(case["transactionid"], analyst_name, "confirmed_fraud")
-            st.success("Marked as confirmed fraud.")
-            st.rerun()
+    st.markdown("<br>", unsafe_allow_html=True)
 
-        if btn_col2.button("Dismiss (False Alarm)", key=f"dismiss_{case['transactionid']}"):
-            save_decision(case["transactionid"], analyst_name, "dismissed")
-            st.success("Dismissed.")
-            st.rerun()
+    for _, case in queue.iterrows():
+        approval_tag = " [SECOND APPROVAL REQUIRED]" if case["requires_second_approval"] else ""
+        header = f"Txn {case['transactionid']} - {case['fraud_probability']:.1%} risk - GBP {case['transactionamt']:.2f}{approval_tag}"
 
-        if btn_col3.button("Escalate", key=f"escalate_{case['transactionid']}"):
-            save_decision(case["transactionid"], analyst_name, "escalated")
-            st.warning("Escalated for further review.")
-            st.rerun()
+        with st.expander(header):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Transaction**")
+                st.write(f"Amount: GBP {case['transactionamt']:.2f}")
+                st.write(f"Product category: {format_value(case['productcd'])}")
+                total_seconds = int(case['transactiondt'])
+                days = total_seconds // 86400
+                hours = (total_seconds % 86400) // 3600
+                minutes = (total_seconds % 3600) // 60
+                st.write(f"Transaction Time: Day {days}, {hours:02d}:{minutes:02d}")
+
+            with col2:
+                st.markdown("**Card & Address**")
+                st.write(f"Card number: {case['card1']}")
+                st.write(f"Card type: {format_value(case['card4'])} / {format_value(case['card6'])}")
+                st.write(f"Billing address code: {format_value(case['addr1'])} / {format_value(case['addr2'])}")
+                st.write(f"Distance signal: {format_value(case['dist1'])}")
+
+            with col3:
+                st.markdown("**Identity & Device**")
+                st.write(f"Device type: {format_value(case['devicetype'])}")
+                st.write(f"Device info: {format_value(case['deviceinfo'])}")
+                st.write(f"Payment email: {format_value(case['p_emaildomain'])}")
+                st.write(f"Receiver email: {format_value(case['r_emaildomain'])}")
+
+            st.markdown("---")
+            st.markdown("**Why this was flagged - behavioral signals:**")
+
+            feature_row = get_case_features(case["transactionid"])
+            shap_values = explainer.shap_values(feature_row)
+            contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+            contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+
+            for feature_name, contribution in contributions:
+                actual_value = feature_row[feature_name].iloc[0]
+                direction = "[UP] toward fraud" if contribution > 0 else "[DOWN] toward normal"
+                st.write(f"- **{feature_name}** = {format_value(actual_value)} -> {direction} ({contribution:+.3f})")
