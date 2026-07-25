@@ -11,8 +11,8 @@ import psycopg2.extras
 import shap
 import streamlit as st
 from dotenv import load_dotenv
-from src.features import get_connection
-from src.train import FEATURE_COLUMNS
+from features import get_connection
+from train import FEATURE_COLUMNS
 
 load_dotenv()
 
