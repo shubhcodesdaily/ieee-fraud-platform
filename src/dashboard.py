@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import logging
 import os
 
@@ -8,7 +11,6 @@ import psycopg2.extras
 import shap
 import streamlit as st
 from dotenv import load_dotenv
-
 from src.features import get_connection
 from src.train import FEATURE_COLUMNS
 
