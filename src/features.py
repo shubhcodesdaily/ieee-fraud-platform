@@ -10,11 +10,12 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
+    "host": os.getenv("DB_HOST", "ep-solitary-shape-ay0p85by-pooler.c-5.us-east-2.aws.neon.tech"),
     "port": os.getenv("DB_PORT", "5433"),
-    "dbname": os.getenv("DB_NAME", "fraud_detection"),
-    "user": os.getenv("DB_USER", "postgres"),
+    "dbname": os.getenv("DB_NAME", "neondb"),
+    "user": os.getenv("DB_USER", "neondb_owner"),
     "password": os.getenv("DB_PASSWORD"),
+    "sslmode": "require"
 }
 
 

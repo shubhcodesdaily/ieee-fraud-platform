@@ -13,7 +13,6 @@ def run_pipeline(sample_rows=None):
     load(clean_df)
     return clean_df
 
-
 if __name__ == "__main__":
     df = run_pipeline(sample_rows=50000)
     print("Done:", df.shape)

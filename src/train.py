@@ -1,4 +1,6 @@
 import logging
+import mlflow
+import mlflow.lightgbm
 import lightgbm as lgb
 import pandas as pd
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -106,12 +108,32 @@ def save_model(model, path="model.joblib"):
 
 
 def run_training():
-    df = build_features()
-    train_df, test_df = split_by_time(df)
-    model = train_model(train_df)
-    roc_auc, pr_auc = evaluate_model(model, test_df)
-    best_threshold, best_cost = find_best_threshold(model, test_df)
-    save_model(model)
+    import mlflow
+    mlflow.set_tracking_uri("sqlite:///C:/mlflow_data/mlflow.db")
+    mlflow.set_experiment("fraud-detection")
+
+    with mlflow.start_run():
+        df = build_features()
+        train_df, test_df = split_by_time(df)
+        model = train_model(train_df)
+        roc_auc, pr_auc = evaluate_model(model, test_df)
+        best_threshold, best_cost = find_best_threshold(model, test_df)
+        save_model(model)
+
+        mlflow.log_param("n_estimators", 200)
+        mlflow.log_param("feature_columns", str(FEATURE_COLUMNS))
+        mlflow.log_param("train_rows", len(train_df))
+        mlflow.log_param("test_rows", len(test_df))
+
+        mlflow.log_metric("roc_auc", roc_auc)
+        mlflow.log_metric("pr_auc", pr_auc)
+        mlflow.log_metric("best_threshold", best_threshold)
+        mlflow.log_metric("best_cost", best_cost)
+
+        mlflow.lightgbm.log_model(model, "model")
+
+        logger.info("Run logged to MLflow. View with: mlflow ui")
+
     return model, roc_auc, pr_auc, best_threshold, best_cost
 
 

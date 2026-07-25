@@ -13,4 +13,5 @@ venv/
 # IDE / OS specific files
 .vscode/
 .DS_Store
-Thumbs.db
+Thumbs.dbmlruns/
+*.joblib
