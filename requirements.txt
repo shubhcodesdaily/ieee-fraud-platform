@@ -1,0 +1,10 @@
+streamlit
+pandas
+psycopg2-binary
+joblib
+shap
+lightgbm
+python-dotenv
+scikit-learn
+matplotlib
+numpy
