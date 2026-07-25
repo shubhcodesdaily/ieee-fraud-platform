@@ -119,8 +119,28 @@ def check_password():
         return True
 
 
-if not check_password():
-    st.stop()
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
+
+if not DEMO_MODE:
+    if not check_password():
+        st.stop()
+
+with st.expander("Engineering Highlights - for technical reviewers", expanded=False):
+    st.markdown("""
+**Data Engineering:** Full ETL pipeline processing 590,540 real transactions into PostgreSQL, with SQL window functions computing leak-free, time-aware behavioral features.
+
+**Model Rigor:** Time-based train/test split (not random) - the model only ever learns from the past. ROC AUC 0.78; PR AUC improved 18% through feature engineering (0.133 -> 0.161).
+
+**Business-Driven Decisioning:** Decision threshold optimized to minimize real dollar loss, not raw accuracy.
+
+**Explainability & Compliance:** Every flagged transaction includes a SHAP-based, plain-English explanation.
+
+**MLOps:** Experiment tracking via MLflow; statistical drift monitoring (Kolmogorov-Smirnov test).
+
+**Human-in-the-loop Governance:** Every analyst decision is permanently logged with a full audit trail.
+
+[View full source code and technical README on GitHub](https://github.com/shubhcodesdaily/ieee-fraud-platform)
+""")
 
 
 @st.cache_resource
@@ -316,7 +336,7 @@ st.markdown(
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.5px;
-        margin-bottom: 10px;
+        margin-bottom: 10px;    
     }
     </style>
     """,
