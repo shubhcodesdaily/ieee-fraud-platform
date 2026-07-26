@@ -16,6 +16,12 @@ FEATURE_COLUMNS = [
     "uid_txn_count_before_this",
     "seconds_since_last_txn",
     "email_txn_count_before_this",
+    "account_age_days",
+    "identity_linkage_score",
+    "match_flag_count",
+    "hour_of_day",
+    "day_of_week",
+    "no_identity_high_velocity",
 ]
 
 TARGET_COLUMN = "isfraud"
