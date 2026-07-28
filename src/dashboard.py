@@ -232,7 +232,9 @@ def get_case_features(transaction_id):
     query = f"""
         SELECT card1, transactionamt, has_identity,
                uid_avg_amt_before_this, uid_txn_count_before_this,
-               seconds_since_last_txn, email_txn_count_before_this
+               seconds_since_last_txn, email_txn_count_before_this,
+               account_age_days, identity_linkage_score, match_flag_count,
+               hour_of_day, day_of_week, no_identity_high_velocity
         FROM (
             SELECT
                 t.transactionid, t.card1, t.transactionamt,
@@ -255,7 +257,23 @@ def get_case_features(transaction_id):
                 COUNT(*) OVER (
                     PARTITION BY t.p_emaildomain ORDER BY t.transactiondt
                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-                ) AS email_txn_count_before_this
+                ) AS email_txn_count_before_this,
+                COALESCE(t.d1, 0) AS account_age_days,
+                COALESCE(t.c1, 0) + COALESCE(t.c2, 0) AS identity_linkage_score,
+                (CASE WHEN t.m1 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m2 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m3 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m4 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) AS match_flag_count,
+                MOD(t.transactiondt / 3600, 24) AS hour_of_day,
+                MOD(t.transactiondt / 86400, 7) AS day_of_week,
+                CASE
+                    WHEN (CASE WHEN i.transactionid IS NOT NULL THEN 1 ELSE 0 END) = 0
+                         AND (t.transactiondt - LAG(t.transactiondt) OVER (
+                                PARTITION BY CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA'))
+                                ORDER BY t.transactiondt
+                              )) < 300
+                    THEN 1 ELSE 0
+                END AS no_identity_high_velocity
             FROM transactions t
             LEFT JOIN identities i ON t.transactionid = i.transactionid
         ) sub
@@ -269,6 +287,12 @@ def get_case_features(transaction_id):
         "uid_txn_count_before_this",
         "seconds_since_last_txn",
         "email_txn_count_before_this",
+        "account_age_days",
+        "identity_linkage_score",
+        "match_flag_count",
+        "hour_of_day",
+        "day_of_week",
+        "no_identity_high_velocity",
     ]
     for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -285,6 +309,22 @@ def save_decision(transaction_id, analyst_name, decision):
         )
     conn.commit()
     conn.close()
+
+FEATURE_DISPLAY_NAMES = {
+    "transactionamt": "Transaction Amount",
+    "has_identity": "Identity Verification on File",
+    "uid_avg_amt_before_this": "Typical Spend for This Customer",
+    "uid_txn_count_before_this": "Prior Transaction Count",
+    "seconds_since_last_txn": "Time Since Last Purchase",
+    "email_txn_count_before_this": "Email Domain Activity Level",
+    "account_age_days": "Account Age (Days)",
+    "identity_linkage_score": "Linked Addresses/Devices Count",
+    "match_flag_count": "Failed Identity Checks",
+    "hour_of_day": "Time-of-Day Pattern",
+    "day_of_week": "Day-of-Week Pattern",
+    "no_identity_high_velocity": "Rapid Transaction with No ID",
+    "card1": "Card Reference Number",
+}
 
 
 def format_value(value):
@@ -436,15 +476,92 @@ with main_col:
                 st.write(f"Payment email: {format_value(case['p_emaildomain'])}")
                 st.write(f"Receiver email: {format_value(case['r_emaildomain'])}")
 
-            st.markdown("---")
+            st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("**Why this was flagged - behavioral signals:**")
+
+            st.markdown(
+                """
+                <style>
+                .reason-row {
+                    display: flex;
+                    align-items: center;
+                    padding: 8px 0;
+                    border-bottom: 1px solid #f0f0f0;
+                }
+                .reason-label {
+                    width: 260px;
+                    font-size: 14px;
+                    color: #1f2937;
+                }
+                .reason-value {
+                    width: 120px;
+                    font-size: 13px;
+                    color: #6b7280;
+                }
+                .reason-bar-track {
+                    flex: 1;
+                    background: #f3f4f6;
+                    border-radius: 4px;
+                    height: 10px;
+                    margin: 0 12px;
+                    position: relative;
+                }
+                .reason-bar-fill-up {
+                    background: #b91c1c;
+                    height: 10px;
+                    border-radius: 4px;
+                }
+                .reason-bar-fill-down {
+                    background: #001f3f;
+                    height: 10px;
+                    border-radius: 4px;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
 
             feature_row = get_case_features(case["transactionid"])
             shap_values = explainer.shap_values(feature_row)
             contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
             contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
 
+            max_abs_contribution = max(abs(c[1]) for c in contributions)
+
             for feature_name, contribution in contributions:
                 actual_value = feature_row[feature_name].iloc[0]
-                direction = "[UP] toward fraud" if contribution > 0 else "[DOWN] toward normal"
-                st.write(f"- **{feature_name}** = {format_value(actual_value)} -> {direction} ({contribution:+.3f})")
+                display_name = FEATURE_DISPLAY_NAMES.get(feature_name, feature_name)
+                bar_width_pct = int((abs(contribution) / max_abs_contribution) * 100)
+                bar_class = "reason-bar-fill-up" if contribution > 0 else "reason-bar-fill-down"
+                arrow = "toward FRAUD" if contribution > 0 else "toward normal"
+
+                st.markdown(
+                    f"""
+                    <div class="reason-row">
+                        <div class="reason-label">{display_name}</div>
+                        <div class="reason-value">{format_value(actual_value)}</div>
+                        <div class="reason-bar-track">
+                            <div class="{bar_class}" style="width: {bar_width_pct}%;"></div>
+                        </div>
+                        <div style="width: 140px; font-size: 12px; color: #6b7280;">{arrow} ({contribution:+.3f})</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            if btn_col1.button("Allow Transaction", key=f"allow_{case['transactionid']}"):
+                save_decision(case["transactionid"], analyst_name, "dismissed")
+                st.success("Transaction allowed - marked as false alarm.")
+                st.rerun()
+
+            if btn_col2.button("Mark as Fraud", key=f"fraud_{case['transactionid']}"):
+                save_decision(case["transactionid"], analyst_name, "confirmed_fraud")
+                st.success("Card marked as confirmed fraud.")
+                st.rerun()
+
+            if btn_col3.button("Escalate for Review", key=f"escalate_{case['transactionid']}"):
+                save_decision(case["transactionid"], analyst_name, "escalated")
+                st.warning("Escalated for senior review.")
+                st.rerun()
