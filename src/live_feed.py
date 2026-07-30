@@ -73,7 +73,9 @@ def compute_features_for_one(transaction_id):
     query = f"""
         SELECT card1, transactionamt, has_identity,
                uid_avg_amt_before_this, uid_txn_count_before_this,
-               seconds_since_last_txn, email_txn_count_before_this
+               seconds_since_last_txn, email_txn_count_before_this,
+               account_age_days, identity_linkage_score, match_flag_count,
+               hour_of_day, day_of_week, no_identity_high_velocity
         FROM (
             SELECT
                 t.transactionid, t.card1, t.transactionamt,
@@ -96,7 +98,23 @@ def compute_features_for_one(transaction_id):
                 COUNT(*) OVER (
                     PARTITION BY t.p_emaildomain ORDER BY t.transactiondt
                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-                ) AS email_txn_count_before_this
+                ) AS email_txn_count_before_this,
+                COALESCE(t.d1, 0) AS account_age_days,
+                COALESCE(t.c1, 0) + COALESCE(t.c2, 0) AS identity_linkage_score,
+                (CASE WHEN t.m1 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m2 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m3 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) +
+                (CASE WHEN t.m4 IS DISTINCT FROM 'T' THEN 1 ELSE 0 END) AS match_flag_count,
+                MOD(t.transactiondt / 3600, 24) AS hour_of_day,
+                MOD(t.transactiondt / 86400, 7) AS day_of_week,
+                CASE
+                    WHEN (CASE WHEN i.transactionid IS NOT NULL THEN 1 ELSE 0 END) = 0
+                         AND (t.transactiondt - LAG(t.transactiondt) OVER (
+                                PARTITION BY CONCAT(t.card1, '_', COALESCE(t.addr1::text, 'NA'))
+                                ORDER BY t.transactiondt
+                              )) < 300
+                    THEN 1 ELSE 0
+                END AS no_identity_high_velocity
             FROM transactions t
             LEFT JOIN identities i ON t.transactionid = i.transactionid
         ) sub
@@ -110,6 +128,12 @@ def compute_features_for_one(transaction_id):
         "uid_txn_count_before_this",
         "seconds_since_last_txn",
         "email_txn_count_before_this",
+        "account_age_days",
+        "identity_linkage_score",
+        "match_flag_count",
+        "hour_of_day",
+        "day_of_week",
+        "no_identity_high_velocity",
     ]
     for col in numeric_columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
