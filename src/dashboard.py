@@ -127,23 +127,6 @@ if not DEMO_MODE:
     if not check_password():
         st.stop()
 
-with st.expander("Engineering Highlights - for technical reviewers", expanded=False):
-    st.markdown("""
-**Data Engineering:** Full ETL pipeline processing 590,540 real transactions into PostgreSQL, with SQL window functions computing leak-free, time-aware behavioral features.
-
-**Model Rigor:** Time-based train/test split (not random) - the model only ever learns from the past. ROC AUC 0.78; PR AUC improved 18% through feature engineering (0.133 -> 0.161).
-
-**Business-Driven Decisioning:** Decision threshold optimized to minimize real dollar loss, not raw accuracy.
-
-**Explainability & Compliance:** Every flagged transaction includes a SHAP-based, plain-English explanation.
-
-**MLOps:** Experiment tracking via MLflow; statistical drift monitoring (Kolmogorov-Smirnov test).
-
-**Human-in-the-loop Governance:** Every analyst decision is permanently logged with a full audit trail.
-
-[View full source code and technical README on GitHub](https://github.com/shubhcodesdaily/ieee-fraud-platform)
-""")
-
 
 @st.cache_resource
 def load_model():
@@ -327,6 +310,55 @@ FEATURE_DISPLAY_NAMES = {
 }
 
 
+
+
+def score_a_new_transaction(card1, addr1, transactionamt, transactiondt, p_emaildomain):
+    """
+    Takes the raw facts of a brand new transaction, computes its real
+    features from database history, and scores it - this is the same
+    logic app.py exposes as an API, reused directly here so the
+    dashboard can demonstrate live scoring without a separate service.
+    """
+    import psycopg2.extras
+
+    conn = get_connection()
+
+    with conn.cursor() as cur:
+        next_id_query = "SELECT COALESCE(MAX(transactionid), 3000000) + 1 FROM transactions;"
+        cur.execute(next_id_query)
+        new_transaction_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO transactions
+                (transactionid, isfraud, transactiondt, transactionamt,
+                 productcd, card1, addr1, p_emaildomain)
+            VALUES (%s, 0, %s, %s, 'W', %s, %s, %s)
+            ON CONFLICT (transactionid) DO NOTHING
+            """,
+            (new_transaction_id, transactiondt, transactionamt, card1, addr1, p_emaildomain),
+        )
+    conn.commit()
+
+    feature_row = get_case_features(new_transaction_id)
+    conn.close()
+
+    probability = model.predict_proba(feature_row)[:, 1][0]
+    is_flagged = bool(probability >= 0.04)
+
+    shap_values = explainer.shap_values(feature_row)
+    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+
+    return {
+        "transaction_id": new_transaction_id,
+        "fraud_probability": probability,
+        "flagged": is_flagged,
+        "contributions": contributions,
+        "feature_row": feature_row,
+    }                
+
+
 def format_value(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "N/A"
@@ -444,6 +476,41 @@ with main_col:
         kpi_card("Pending Value", f"GBP {pending_value/1000:,.1f}K")
 
     st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    with st.expander("Live Transaction Scoring - Test a New Transaction", expanded=False):
+        st.markdown("Enter transaction details below to see the model score it in real time.")
+
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            live_card1 = st.number_input("Card Number", min_value=1000, max_value=20000, value=5000)
+            live_amount = st.number_input("Transaction Amount (GBP)", min_value=0.0, value=100.0)
+        with lc2:
+            live_addr1 = st.number_input("Billing Address Code", min_value=100, max_value=540, value=200)
+            live_time = st.number_input("Time Offset (seconds)", min_value=0, value=16000000)
+        with lc3:
+            live_email = st.selectbox("Email Domain", ["gmail.com", "yahoo.com", "hotmail.com", "anonymous.com"])
+
+        if st.button("Score This Transaction", key="live_score_button"):
+            with st.spinner("Analyzing transaction..."):
+                result = score_a_new_transaction(
+                    live_card1, live_addr1, live_amount, live_time, live_email
+                )
+
+            st.markdown("---")
+            risk_col1, risk_col2 = st.columns(2)
+            with risk_col1:
+                st.metric("Fraud Probability", f"{result['fraud_probability']:.1%}")
+            with risk_col2:
+                verdict = "FLAGGED FOR REVIEW" if result["flagged"] else "APPEARS LEGITIMATE"
+                st.metric("Verdict", verdict)
+
+            st.markdown("**Why:**")
+            for feature_name, contribution in result["contributions"][:5]:
+                display_name = FEATURE_DISPLAY_NAMES.get(feature_name, feature_name)
+                direction = "increases risk" if contribution > 0 else "decreases risk"
+                st.write(f"- {display_name}: {direction} ({contribution:+.3f})")
 
     for _, case in queue.iterrows():
         approval_tag = " [SECOND APPROVAL REQUIRED]" if case["requires_second_approval"] else ""
@@ -565,3 +632,6 @@ with main_col:
                 save_decision(case["transactionid"], analyst_name, "escalated")
                 st.warning("Escalated for senior review.")
                 st.rerun()
+
+
+
