@@ -310,55 +310,6 @@ FEATURE_DISPLAY_NAMES = {
 }
 
 
-
-
-def score_a_new_transaction(card1, addr1, transactionamt, transactiondt, p_emaildomain):
-    """
-    Takes the raw facts of a brand new transaction, computes its real
-    features from database history, and scores it - this is the same
-    logic app.py exposes as an API, reused directly here so the
-    dashboard can demonstrate live scoring without a separate service.
-    """
-    import psycopg2.extras
-
-    conn = get_connection()
-
-    with conn.cursor() as cur:
-        next_id_query = "SELECT COALESCE(MAX(transactionid), 3000000) + 1 FROM transactions;"
-        cur.execute(next_id_query)
-        new_transaction_id = cur.fetchone()[0]
-
-        cur.execute(
-            """
-            INSERT INTO transactions
-                (transactionid, isfraud, transactiondt, transactionamt,
-                 productcd, card1, addr1, p_emaildomain)
-            VALUES (%s, 0, %s, %s, 'W', %s, %s, %s)
-            ON CONFLICT (transactionid) DO NOTHING
-            """,
-            (new_transaction_id, transactiondt, transactionamt, card1, addr1, p_emaildomain),
-        )
-    conn.commit()
-
-    feature_row = get_case_features(new_transaction_id)
-    conn.close()
-
-    probability = model.predict_proba(feature_row)[:, 1][0]
-    is_flagged = bool(probability >= 0.04)
-
-    shap_values = explainer.shap_values(feature_row)
-    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
-    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
-
-    return {
-        "transaction_id": new_transaction_id,
-        "fraud_probability": probability,
-        "flagged": is_flagged,
-        "contributions": contributions,
-        "feature_row": feature_row,
-    }                
-
-
 def format_value(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return "N/A"
@@ -417,7 +368,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
+0000000
 with st.sidebar:
     with st.container(border=True):
         st.markdown('<div class="sidebar-header">Analyst</div>', unsafe_allow_html=True)
@@ -427,6 +378,73 @@ with st.sidebar:
         st.session_state["password_correct"] = False
         st.rerun()
 
+    with st.container(border=True):
+        st.markdown('<div class="sidebar-header">Live Activity Feed</div>', unsafe_allow_html=True)
+        if st.button("Refresh feed"):
+            st.rerun()
+
+        activity = get_recent_activity()
+
+        total_seen = len(activity)
+        total_flagged = int(activity["was_flagged"].sum()) if total_seen > 0 else 0
+        total_clean = total_seen - total_flagged
+
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:space-between; padding:8px 0; margin-bottom:8px; border-bottom:1px solid #e5e7eb;">
+                <div style="text-align:center;">
+                    <div style="font-size:11px; color:#6b7280;">SEEN</div>
+                    <div style="font-size:18px; font-weight:700; color:#001f3f;">{total_seen}</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:11px; color:#6b7280;">FLAGGED</div>
+                    <div style="font-size:18px; font-weight:700; color:#b91c1c;">{total_flagged}</div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:11px; color:#6b7280;">CLEARED</div>
+                    <div style="font-size:18px; font-weight:700; color:#15803d;">{total_clean}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            """
+            <style>
+            .activity-card {
+                border-radius: 6px;
+                padding: 8px 10px;
+                margin-bottom: 6px;
+                font-size: 13px;
+            }
+            .activity-flagged {
+                background: #fef2f2;
+                border-left: 3px solid #b91c1c;
+            }
+            .activity-clean {
+                background: #f0fdf4;
+                border-left: 3px solid #15803d;
+            }
+            .activity-txn { font-weight: 600; color: #1f2937; }
+            .activity-detail { color: #6b7280; font-size: 12px; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        for _, row in activity.iterrows():
+            card_class = "activity-flagged" if row["was_flagged"] else "activity-clean"
+            status_word = "Flagged for review" if row["was_flagged"] else "Cleared"
+            st.markdown(
+                f"""
+                <div class="activity-card {card_class}">
+                    <div class="activity-txn">Txn {row['transactionid']}</div>
+                    <div class="activity-detail">GBP {row['transactionamt']:.2f} &middot; {row['fraud_probability']:.1%} risk &middot; {status_word}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 main_col, activity_col = st.columns([3, 1])
 
@@ -479,23 +497,46 @@ with main_col:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    with st.expander("Live Transaction Scoring - Test a New Transaction", expanded=False):
-        st.markdown("Enter transaction details below to see the model score it in real time.")
+    with st.expander("Fraud Detection Simulator", expanded=False):
+        st.markdown(
+            "Generate a **simulated** transaction and watch the model analyze it live. "
+            "This uses synthetic, randomly-generated data only - no real customer "
+            "information is used or displayed here."
+        )
 
-        lc1, lc2, lc3 = st.columns(3)
-        with lc1:
-            live_card1 = st.number_input("Card Number", min_value=1000, max_value=20000, value=5000)
-            live_amount = st.number_input("Transaction Amount (GBP)", min_value=0.0, value=100.0)
-        with lc2:
-            live_addr1 = st.number_input("Billing Address Code", min_value=100, max_value=540, value=200)
-            live_time = st.number_input("Time Offset (seconds)", min_value=0, value=16000000)
-        with lc3:
-            live_email = st.selectbox("Email Domain", ["gmail.com", "yahoo.com", "hotmail.com", "anonymous.com"])
+        import datetime
 
-        if st.button("Score This Transaction", key="live_score_button"):
-            with st.spinner("Analyzing transaction..."):
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        with sc1:
+            sim_card1 = st.number_input("Card Number (simulated)", min_value=1000, max_value=20000, value=5000)
+        with sc2:
+            sim_amount = st.number_input("Transaction Amount (GBP)", min_value=0.0, value=100.0)
+        with sc3:
+            sim_addr1 = st.number_input("Billing Address Code", min_value=100, max_value=540, value=200)
+        with sc4:
+            sim_date = st.date_input(
+                "Simulated Transaction Date",
+                value=datetime.date(2019, 6, 15),
+                min_value=datetime.date(2019, 1, 1),
+                max_value=datetime.date(2019, 12, 31),
+            )
+        with sc5:
+            sim_time_of_day = st.time_input("Simulated Transaction Time", value=datetime.time(14, 30))
+
+        sim_email = st.selectbox("Email Domain", ["gmail.com", "yahoo.com", "hotmail.com", "anonymous.com"])
+
+        # Convert the chosen date/time into the seconds-offset format the
+        # model actually uses internally - this keeps the underlying data
+        # honest (Kaggle's real reference point is unknown) while giving
+        # the analyst a realistic, human date/time to work with.
+        reference_date = datetime.datetime(2019, 1, 1)
+        chosen_datetime = datetime.datetime.combine(sim_date, sim_time_of_day)
+        sim_time_offset = int((chosen_datetime - reference_date).total_seconds())
+
+        if st.button("Run Simulation", key="live_score_button"):
+            with st.spinner("Analyzing simulated transaction..."):
                 result = score_a_new_transaction(
-                    live_card1, live_addr1, live_amount, live_time, live_email
+                    sim_card1, sim_addr1, sim_amount, sim_time_offset, sim_email
                 )
 
             st.markdown("---")
@@ -634,4 +675,49 @@ with main_col:
                 st.rerun()
 
 
+def score_a_new_transaction(card1, addr1, transactionamt, transactiondt, p_emaildomain):
+    """
+    Takes the raw facts of a brand new transaction, computes its real
+    features from database history, and scores it - this is the same
+    logic app.py exposes as an API, reused directly here so the
+    dashboard can demonstrate live scoring without a separate service.
+    """
+    import psycopg2.extras
+
+    conn = get_connection()
+
+    with conn.cursor() as cur:
+        next_id_query = "SELECT COALESCE(MAX(transactionid), 3000000) + 1 FROM transactions;"
+        cur.execute(next_id_query)
+        new_transaction_id = cur.fetchone()[0]
+
+        cur.execute(
+            """
+            INSERT INTO transactions
+                (transactionid, isfraud, transactiondt, transactionamt,
+                 productcd, card1, addr1, p_emaildomain)
+            VALUES (%s, 0, %s, %s, 'W', %s, %s, %s)
+            ON CONFLICT (transactionid) DO NOTHING
+            """,
+            (new_transaction_id, transactiondt, transactionamt, card1, addr1, p_emaildomain),
+        )
+    conn.commit()
+
+    feature_row = get_case_features(new_transaction_id)
+    conn.close()
+
+    probability = model.predict_proba(feature_row)[:, 1][0]
+    is_flagged = bool(probability >= 0.04)
+
+    shap_values = explainer.shap_values(feature_row)
+    contributions = list(zip(FEATURE_COLUMNS, shap_values[0]))
+    contributions.sort(key=lambda pair: abs(pair[1]), reverse=True)
+
+    return {
+        "transaction_id": new_transaction_id,
+        "fraud_probability": probability,
+        "flagged": is_flagged,
+        "contributions": contributions,
+        "feature_row": feature_row,
+    }                
 
