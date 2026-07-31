@@ -64,7 +64,8 @@ A working, end-to-end system I understand completely, start to finish - not a bl
 `
 
 **MLflow experiment tracking**
-`[screenshot: the three logged runs and their metrics]`
+<img width="1916" height="920" alt="image" src="https://github.com/user-attachments/assets/fdf3d66d-7365-4551-b32a-ac3b340873a6" />
+
 
 ---
 
