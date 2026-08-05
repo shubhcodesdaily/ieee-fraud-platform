@@ -4,7 +4,9 @@
   <img width="747" height="107" alt="image" src="https://github.com/user-attachments/assets/ce8e79cd-f21b-4289-addf-76955708daeb" />
 
 
-**Source & Technical Documentation:** this repository · **Executive Report:** [your Power BI URL, if included]
+## Tech stack
+
+Python · PostgreSQL (Neon) · Docker · SQL window functions · pandas · LightGBM · scikit-learn · SHAP · FastAPI · Streamlit · MLflow · Power BI · Git/GitHub
 
 ---
 
