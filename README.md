@@ -127,9 +127,12 @@ Column meanings for groups 3-5 are only partially documented by Kaggle/Vesta ("c
 |---|---|---|---|---|
 | Baseline | `card1` only | 0.777 | 0.166 | Initial working model |
 | + UID/identity/email | 7 features | 0.782 | 0.163 | UID construction (`card1`+`addr1`) |
-| + account age, identity linkage, match checks | **13 features** | **0.845** | **0.361** | Major improvement |
+| + account age, identity linkage, match checks | 13 features | **0.845** | **0.361** | Major improvement - production model |
+| + class weighting (`scale_pos_weight`) | 13 features | 0.840 | 0.350 | Tested, reverted - see note below |
 
-Adding account-maturity, identity-linkage, and consistency-check features - all directly traceable to Kaggle's own documented column groups - **more than doubled PR AUC** (0.163 -> 0.361), a 121% relative improvement, and reduced estimated business cost on the test set by over $83,000.
+Adding account-maturity, identity-linkage, and consistency-check features - all directly traceable to Kaggle's own documented column groups - **more than doubled PR AUC** (0.163 → 0.361), a 121% relative improvement, and reduced estimated business cost on the test set by over $83,000.
+
+**On class imbalance:** the dataset is genuinely imbalanced (~3.5% fraud), and this was addressed at two levels - using PR AUC rather than accuracy as the evaluation metric, and a cost-sensitive decision threshold that minimizes real dollar loss rather than an arbitrary 0.5 cutoff. I additionally tested `scale_pos_weight` (class weighting) as a further imbalance-handling technique, but it produced a slightly worse PR AUC (0.350 vs. 0.361) - the cost-sensitive threshold was already effectively compensating for the imbalance, and the added weighting didn't provide further benefit. I kept the simpler, better-performing model rather than adding complexity that didn't help - all four runs are logged and comparable in MLflow.
 
 ---
 
@@ -174,7 +177,3 @@ Adding account-maturity, identity-linkage, and consistency-check features - all 
 - LLM-drafted Suspicious Activity Report (SAR) generation for confirmed fraud cases
 
 ---
-
-## Tech stack
-
-Python · PostgreSQL (Neon) · Docker · SQL window functions · pandas · LightGBM · scikit-learn · SHAP · FastAPI · Streamlit · MLflow · Power BI · Git/GitHub
